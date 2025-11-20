@@ -903,6 +903,8 @@ class Shell:
             'stat': self.cmd_stat,
             'cat': self.cmd_cat,
             'write': self.cmd_write,
+            'append': self.cmd_append,
+            'edit': self.cmd_edit,
             'cp': self.cmd_cp,
             'copyin': self.cmd_copyin,
             'copyout': self.cmd_copyout,
@@ -930,7 +932,8 @@ class Shell:
         print("  rm <inode>          - Remove a file by inode number")
         print("  stat <inode>        - Display file statistics")
         print("  cat <inode>         - Display file contents")
-        print("  write <inode> <txt> - Write text to a file")
+        print("  write <inode> <txt> - Append text to end of file")
+        print("  edit <inode>        - Interactive editor for file")
         print("  cp <src> <dst>      - Copy file (inode numbers)")
         print("  copyin <file> <ino> - Copy file from host to fs")
         print("  copyout <ino> <file>- Copy file from fs to host")
@@ -1077,23 +1080,127 @@ class Shell:
             print("Error: Invalid inode number")
     
     def cmd_write(self, args):
-        """Write text to a file."""
+        """Write text to a file (appends to end by default)."""
         if len(args) < 2:
             print("Usage: write <inode_number> <text>")
             return
         
         try:
             inode_num = int(args[0])
+            
+            # Get current file size to append at end
+            size = self.fs.stat(inode_num)
+            if size < 0:
+                print("Error: Invalid inode")
+                return
+            
             text = ' '.join(args[1:])
             data = text.encode('utf-8')
             
-            bytes_written = self.fs.write(inode_num, data)
+            # Append at the end
+            bytes_written = self.fs.write(inode_num, data, offset=size)
             if bytes_written > 0:
                 print(f"Wrote {bytes_written} bytes to inode {inode_num}")
             else:
                 print("Failed to write data")
         except ValueError:
             print("Error: Invalid inode number")
+    
+    def cmd_append(self, args):
+        """Append text to end of file."""
+        if len(args) < 2:
+            print("Usage: append <inode_number> <text>")
+            return
+        
+        try:
+            inode_num = int(args[0])
+            
+            # Get current file size
+            size = self.fs.stat(inode_num)
+            if size < 0:
+                print("Error: Invalid inode")
+                return
+            
+            # Append at end
+            text = ' '.join(args[1:])
+            data = text.encode('utf-8')
+            
+            bytes_written = self.fs.write(inode_num, data, offset=size)
+            if bytes_written > 0:
+                print(f"Appended {bytes_written} bytes to inode {inode_num}")
+            else:
+                print("Failed to append data")
+        except ValueError:
+            print("Error: Invalid inode number")
+    
+    def cmd_edit(self, args):
+        """Interactive editor for file."""
+        if not args:
+            print("Usage: edit <inode_number>")
+            return
+        
+        try:
+            inode_num = int(args[0])
+            
+            # Read current content
+            size = self.fs.stat(inode_num)
+            if size < 0:
+                print("Error: Invalid inode")
+                return
+            
+            current_text = ""
+            if size > 0:
+                data = self.fs.read(inode_num, size)
+                if data:
+                    try:
+                        current_text = data.decode('utf-8')
+                    except UnicodeDecodeError:
+                        print("Error: File contains binary data, cannot edit")
+                        return
+            
+            # Show current content
+            print("\n" + "="*60)
+            print(f"Editing inode {inode_num} (current size: {size} bytes)")
+            print("="*60)
+            if current_text:
+                print("Current content:")
+                print(current_text)
+                print("-"*60)
+            else:
+                print("(empty file)")
+                print("-"*60)
+            
+            print("\nEnter new content (type 'END' on a new line to finish):")
+            print("Or type 'CANCEL' to discard changes\n")
+            
+            # Read new content
+            lines = []
+            while True:
+                try:
+                    line = input()
+                    if line == "END":
+                        break
+                    if line == "CANCEL":
+                        print("Edit cancelled")
+                        return
+                    lines.append(line)
+                except EOFError:
+                    break
+            
+            # Write new content
+            new_text = '\n'.join(lines)
+            new_data = new_text.encode('utf-8')
+            
+            bytes_written = self.fs.write(inode_num, new_data, offset=0)
+            if bytes_written > 0:
+                print(f"\n✓ Saved {bytes_written} bytes to inode {inode_num}")
+            else:
+                print("\nFailed to save changes")
+                
+        except ValueError:
+            print("Error: Invalid inode number")
+        except KeyboardInterrupt:
+            print("\nEdit cancelled")
     
     def cmd_cp(self, args):
         """Copy a file."""
