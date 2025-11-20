@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-File System Simulator with Interactive Shell and Custom Allocation Visualization
+File System Simulator with Interactive Shell and Real-Time GUI Visualization
 A comprehensive educational tool for understanding file system internals.
 
 Authors: Based on requirements by Bhupinder Bhattarai, Vidyabharathi Ramachandran, Yathish Karkera
@@ -10,8 +10,12 @@ import os
 import sys
 import struct
 import time
+import threading
+import webbrowser
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
 
 # Constants
 BLOCK_SIZE = 4096  # 4KB blocks
@@ -212,6 +216,16 @@ class FileSystem:
         self.free_blocks = []
         self.superblock = SuperBlock()
         self.current_dir_inode = 0
+        self.gui_update_callback = None
+    
+    def set_gui_callback(self, callback):
+        """Set callback for GUI updates."""
+        self.gui_update_callback = callback
+    
+    def _notify_gui(self):
+        """Notify GUI of changes."""
+        if self.gui_update_callback:
+            self.gui_update_callback()
     
     def format(self, disk: DiskEmulator) -> bool:
         """Format the disk with a new file system."""
@@ -282,6 +296,8 @@ class FileSystem:
         
         print(f"Mounted file system: {self.superblock.blocks} blocks, "
               f"{self.superblock.inodes} inodes")
+        
+        self._notify_gui()
         return True
     
     def unmount(self):
@@ -291,6 +307,7 @@ class FileSystem:
             self.mounted = False
             self.free_blocks = []
             print("File system unmounted")
+            self._notify_gui()
     
     def debug(self) -> bool:
         """Print file system debug information."""
@@ -386,6 +403,7 @@ class FileSystem:
             self._save_inode(self.disk, inode_num, inode)
             return -1
         
+        self._notify_gui()
         return inode_num
     
     def remove_file(self, inode_num: int) -> bool:
@@ -416,7 +434,10 @@ class FileSystem:
         
         # Mark inode as invalid
         inode.valid = 0
-        return self._save_inode(self.disk, inode_num, inode)
+        result = self._save_inode(self.disk, inode_num, inode)
+        
+        self._notify_gui()
+        return result
     
     def stat(self, inode_num: int) -> int:
         """Get file size by inode number."""
@@ -526,6 +547,7 @@ class FileSystem:
         inode.modified = int(time.time())
         self._save_inode(self.disk, inode_num, inode)
         
+        self._notify_gui()
         return bytes_written
     
     def mkdir(self, name: str) -> int:
@@ -565,6 +587,7 @@ class FileSystem:
             self.remove_file(inode_num)
             return -1
         
+        self._notify_gui()
         return inode_num
     
     def ls(self) -> List[Tuple[str, int, str, int]]:
@@ -632,8 +655,6 @@ class FileSystem:
             return {}
         
         total_blocks = self.superblock.blocks
-        used_blocks = len([b for b in self.free_blocks if not b])
-        free_blocks_count = len([b for b in self.free_blocks if b])
         
         # Categorize blocks
         superblock_blocks = [0]
@@ -651,12 +672,12 @@ class FileSystem:
         
         return {
             'total_blocks': total_blocks,
-            'used_blocks': used_blocks,
-            'free_blocks': free_blocks_count,
             'superblock_blocks': superblock_blocks,
             'inode_blocks': inode_blocks,
             'data_blocks_used': data_blocks_used,
             'data_blocks_free': data_blocks_free,
+            'disk_reads': self.disk.reads if self.disk else 0,
+            'disk_writes': self.disk.writes if self.disk else 0,
         }
     
     def _build_free_block_map(self):
@@ -829,6 +850,396 @@ class FileSystem:
         return bytes_written == len(entry_data)
 
 
+# Global reference to file system for HTTP server
+global_fs = None
+
+
+class VisualizationHandler(BaseHTTPRequestHandler):
+    """HTTP handler for serving visualization."""
+    
+    def log_message(self, format, *args):
+        """Suppress HTTP server logging."""
+        pass
+    
+    def do_GET(self):
+        """Handle GET requests."""
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(self.get_html().encode())
+        elif self.path == '/data':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            
+            if global_fs and global_fs.mounted:
+                data = global_fs.get_visualization_data()
+            else:
+                data = {'total_blocks': 0}
+            
+            self.wfile.write(json.dumps(data).encode())
+        else:
+            self.send_error(404)
+    
+    def get_html(self):
+        """Generate HTML for visualization."""
+        return '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File System Block Allocation - Live View</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 20px;
+            margin-top: 10px;
+        }
+        .status.live {
+            background: #43e97b;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .content {
+            padding: 30px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            transition: transform 0.3s;
+            color: white;
+        }
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        .stat-card.superblock { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .stat-card.inode { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+        .stat-card.used { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
+        .stat-card.free { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
+        .stat-card.io { background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); }
+        .stat-card .label {
+            font-size: 0.85em;
+            opacity: 0.9;
+            margin-bottom: 8px;
+        }
+        .stat-card .value {
+            font-size: 1.8em;
+            font-weight: bold;
+        }
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 25px;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 1em;
+        }
+        .legend-color {
+            width: 25px;
+            height: 25px;
+            border-radius: 4px;
+            border: 2px solid #333;
+        }
+        .legend-color.superblock { background: #f5576c; }
+        .legend-color.inode { background: #00f2fe; }
+        .legend-color.used { background: #38f9d7; }
+        .legend-color.free { background: #e0e0e0; }
+        .blocks-container {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .blocks-container h3 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        .blocks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(22px, 1fr));
+            gap: 3px;
+        }
+        .block {
+            aspect-ratio: 1;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
+        }
+        .block:hover {
+            transform: scale(1.4);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            z-index: 10;
+        }
+        .block.superblock { background: #f5576c; }
+        .block.inode { background: #00f2fe; }
+        .block.used { background: #38f9d7; }
+        .block.free { background: #e0e0e0; }
+        .tooltip {
+            position: fixed;
+            background: rgba(0,0,0,0.9);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            pointer-events: none;
+            display: none;
+            z-index: 1000;
+            max-width: 250px;
+        }
+        .update-info {
+            text-align: center;
+            color: #666;
+            margin-top: 15px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🗂️ File System Block Allocation</h1>
+            <div class="status live" id="status">● LIVE</div>
+        </div>
+
+        <div class="content">
+            <div class="stats-grid">
+                <div class="stat-card superblock">
+                    <div class="label">Superblock</div>
+                    <div class="value" id="superblockCount">-</div>
+                </div>
+                <div class="stat-card inode">
+                    <div class="label">Inode Blocks</div>
+                    <div class="value" id="inodeCount">-</div>
+                </div>
+                <div class="stat-card used">
+                    <div class="label">Data Used</div>
+                    <div class="value" id="usedCount">-</div>
+                </div>
+                <div class="stat-card free">
+                    <div class="label">Free Blocks</div>
+                    <div class="value" id="freeCount">-</div>
+                </div>
+                <div class="stat-card io">
+                    <div class="label">Disk I/O</div>
+                    <div class="value" id="ioCount">-</div>
+                </div>
+            </div>
+
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-color superblock"></div>
+                    <span><strong>S</strong> Superblock</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color inode"></div>
+                    <span><strong>I</strong> Inodes</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color used"></div>
+                    <span><strong>D</strong> Data (Used)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color free"></div>
+                    <span><strong>F</strong> Free</span>
+                </div>
+            </div>
+
+            <div class="blocks-container">
+                <h3>📦 Block Allocation Grid</h3>
+                <div class="blocks-grid" id="blocksGrid"></div>
+            </div>
+
+            <div class="update-info">
+                Auto-updates every second • Hover over blocks for details
+            </div>
+        </div>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+        let lastData = null;
+
+        function updateVisualization() {
+            fetch('/data')
+                .then(response => response.json())
+                .then(data => {
+                    if (JSON.stringify(data) !== JSON.stringify(lastData)) {
+                        lastData = data;
+                        renderVisualization(data);
+                    }
+                })
+                .catch(err => console.error('Error fetching data:', err));
+        }
+
+        function renderVisualization(data) {
+            if (!data.total_blocks) {
+                return;
+            }
+
+            const grid = document.getElementById('blocksGrid');
+            grid.innerHTML = '';
+
+            // Update stats
+            document.getElementById('superblockCount').textContent = data.superblock_blocks.length;
+            document.getElementById('inodeCount').textContent = data.inode_blocks.length;
+            document.getElementById('usedCount').textContent = data.data_blocks_used.length;
+            document.getElementById('freeCount').textContent = data.data_blocks_free.length;
+            document.getElementById('ioCount').textContent = 
+                `R:${data.disk_reads} W:${data.disk_writes}`;
+
+            // Create blocks
+            for (let i = 0; i < data.total_blocks; i++) {
+                const block = document.createElement('div');
+                block.className = 'block';
+                
+                if (data.superblock_blocks.includes(i)) {
+                    block.classList.add('superblock');
+                    block.dataset.type = 'Superblock';
+                    block.dataset.info = 'File system metadata';
+                } else if (data.inode_blocks.includes(i)) {
+                    block.classList.add('inode');
+                    block.dataset.type = 'Inode Block';
+                    block.dataset.info = 'File/directory metadata';
+                } else if (data.data_blocks_used.includes(i)) {
+                    block.classList.add('used');
+                    block.dataset.type = 'Data Block (Used)';
+                    block.dataset.info = 'Contains file data';
+                } else {
+                    block.classList.add('free');
+                    block.dataset.type = 'Free Block';
+                    block.dataset.info = 'Available for allocation';
+                }
+
+                block.dataset.blockNum = i;
+                
+                block.addEventListener('mouseenter', showTooltip);
+                block.addEventListener('mouseleave', hideTooltip);
+                block.addEventListener('mousemove', moveTooltip);
+
+                grid.appendChild(block);
+            }
+        }
+
+        function showTooltip(e) {
+            const tooltip = document.getElementById('tooltip');
+            const block = e.target;
+            
+            tooltip.innerHTML = `
+                <strong>Block #${block.dataset.blockNum}</strong><br>
+                Type: ${block.dataset.type}<br>
+                ${block.dataset.info}
+            `;
+            tooltip.style.display = 'block';
+            moveTooltip(e);
+        }
+
+        function hideTooltip() {
+            document.getElementById('tooltip').style.display = 'none';
+        }
+
+        function moveTooltip(e) {
+            const tooltip = document.getElementById('tooltip');
+            tooltip.style.left = (e.pageX + 15) + 'px';
+            tooltip.style.top = (e.pageY + 15) + 'px';
+        }
+
+        // Update every second
+        setInterval(updateVisualization, 1000);
+        updateVisualization();
+    </script>
+</body>
+</html>'''
+
+
+class GUIServer:
+    """Web server for GUI visualization."""
+    
+    def __init__(self, fs: FileSystem, port: int = 8080):
+        self.fs = fs
+        self.port = port
+        self.server = None
+        self.thread = None
+        
+        global global_fs
+        global_fs = fs
+    
+    def start(self):
+        """Start the GUI server in a separate thread."""
+        self.thread = threading.Thread(target=self._run_server, daemon=True)
+        self.thread.start()
+        
+        # Give server time to start
+        time.sleep(0.5)
+        
+        # Open browser
+        url = f"http://localhost:{self.port}"
+        print(f"\n🌐 GUI Visualization started at: {url}")
+        print("   The visualization will update automatically as you use the file system.\n")
+        webbrowser.open(url)
+    
+    def _run_server(self):
+        """Run the HTTP server."""
+        try:
+            self.server = HTTPServer(('localhost', self.port), VisualizationHandler)
+            self.server.serve_forever()
+        except Exception as e:
+            print(f"GUI server error: {e}")
+    
+    def stop(self):
+        """Stop the GUI server."""
+        if self.server:
+            self.server.shutdown()
+
+
 class Shell:
     """Interactive shell for file system operations."""
     
@@ -836,11 +1247,12 @@ class Shell:
         self.fs = FileSystem()
         self.disk = None
         self.running = True
+        self.gui_server = None
     
     def run(self, disk_path: str, blocks: int):
         """Run the shell."""
         print("=" * 60)
-        print("File System Simulator - Interactive Shell")
+        print("File System Simulator - Interactive Shell with Live GUI")
         print("=" * 60)
         
         # Open disk
@@ -850,7 +1262,8 @@ class Shell:
             return
         
         print(f"Disk opened: {disk_path} ({blocks} blocks)")
-        print("Type 'help' for available commands\n")
+        print("Type 'help' for available commands")
+        print("Type 'gui' to open the live visualization\n")
         
         while self.running:
             try:
@@ -874,6 +1287,8 @@ class Shell:
                 print(f"Error: {e}")
         
         # Cleanup
+        if self.gui_server:
+            self.gui_server.stop()
         if self.fs.mounted:
             self.fs.unmount()
         self.disk.close()
@@ -891,6 +1306,7 @@ class Shell:
         # Command routing
         commands = {
             'help': self.cmd_help,
+            'gui': self.cmd_gui,
             'format': self.cmd_format,
             'mount': self.cmd_mount,
             'unmount': self.cmd_unmount,
@@ -903,12 +1319,10 @@ class Shell:
             'stat': self.cmd_stat,
             'cat': self.cmd_cat,
             'write': self.cmd_write,
-            'append': self.cmd_append,
             'edit': self.cmd_edit,
             'cp': self.cmd_cp,
             'copyin': self.cmd_copyin,
             'copyout': self.cmd_copyout,
-            'visualize': self.cmd_visualize,
             'exit': self.cmd_exit,
             'quit': self.cmd_exit,
         }
@@ -921,6 +1335,7 @@ class Shell:
     def cmd_help(self, args):
         """Display help information."""
         print("\nAvailable Commands:")
+        print("  gui                 - Open live GUI visualization in browser")
         print("  format              - Format the disk with a new file system")
         print("  mount               - Mount the file system")
         print("  unmount             - Unmount the file system")
@@ -937,9 +1352,17 @@ class Shell:
         print("  cp <src> <dst>      - Copy file (inode numbers)")
         print("  copyin <file> <ino> - Copy file from host to fs")
         print("  copyout <ino> <file>- Copy file from fs to host")
-        print("  visualize           - Display block allocation visualization")
         print("  help                - Display this help message")
         print("  exit, quit          - Exit the shell\n")
+    
+    def cmd_gui(self, args):
+        """Open GUI visualization."""
+        if not self.gui_server:
+            self.gui_server = GUIServer(self.fs)
+            self.fs.set_gui_callback(lambda: None)  # GUI updates via polling
+            self.gui_server.start()
+        else:
+            print("GUI is already running at http://localhost:8080")
     
     def cmd_format(self, args):
         """Format the file system."""
@@ -1106,33 +1529,6 @@ class Shell:
         except ValueError:
             print("Error: Invalid inode number")
     
-    def cmd_append(self, args):
-        """Append text to end of file."""
-        if len(args) < 2:
-            print("Usage: append <inode_number> <text>")
-            return
-        
-        try:
-            inode_num = int(args[0])
-            
-            # Get current file size
-            size = self.fs.stat(inode_num)
-            if size < 0:
-                print("Error: Invalid inode")
-                return
-            
-            # Append at end
-            text = ' '.join(args[1:])
-            data = text.encode('utf-8')
-            
-            bytes_written = self.fs.write(inode_num, data, offset=size)
-            if bytes_written > 0:
-                print(f"Appended {bytes_written} bytes to inode {inode_num}")
-            else:
-                print("Failed to append data")
-        except ValueError:
-            print("Error: Invalid inode number")
-    
     def cmd_edit(self, args):
         """Interactive editor for file."""
         if not args:
@@ -1292,55 +1688,6 @@ class Shell:
         except Exception as e:
             print(f"Error: {e}")
     
-    def cmd_visualize(self, args):
-        """Display block allocation visualization."""
-        if not self.fs.mounted:
-            print("Error: File system not mounted")
-            return
-        
-        data = self.fs.get_visualization_data()
-        if not data:
-            return
-        
-        print("\n" + "=" * 60)
-        print("Block Allocation Visualization")
-        print("=" * 60)
-        
-        print(f"\nTotal Blocks: {data['total_blocks']}")
-        print(f"Used Blocks:  {data['used_blocks']}")
-        print(f"Free Blocks:  {data['free_blocks']}")
-        
-        # Calculate percentages
-        used_pct = (data['used_blocks'] / data['total_blocks'] * 100) if data['total_blocks'] > 0 else 0
-        free_pct = (data['free_blocks'] / data['total_blocks'] * 100) if data['total_blocks'] > 0 else 0
-        
-        print(f"\nUsage: {used_pct:.1f}% used, {free_pct:.1f}% free")
-        
-        # Visual representation
-        print("\nBlock Map Legend:")
-        print("  [S] = Superblock")
-        print("  [I] = Inode block")
-        print("  [D] = Data block (used)")
-        print("  [.] = Free block")
-        
-        print("\nBlock Allocation Map:")
-        blocks_per_line = 40
-        
-        for i in range(0, data['total_blocks'], blocks_per_line):
-            line = f"{i:4d}: "
-            for j in range(i, min(i + blocks_per_line, data['total_blocks'])):
-                if j in data['superblock_blocks']:
-                    line += "S"
-                elif j in data['inode_blocks']:
-                    line += "I"
-                elif j in data['data_blocks_used']:
-                    line += "D"
-                else:
-                    line += "."
-            print(line)
-        
-        print("\n" + "=" * 60 + "\n")
-    
     def cmd_exit(self, args):
         """Exit the shell."""
         self.running = False
@@ -1349,13 +1696,14 @@ class Shell:
 def main():
     """Main entry point."""
     if len(sys.argv) < 3:
-        print("File System Simulator - Educational Tool")
+        print("File System Simulator with Live GUI Visualization")
         print("=" * 60)
         print("\nUsage: python fs_simulator.py <disk_image> <num_blocks>")
         print("\nExample:")
         print("  python fs_simulator.py disk.img 100")
         print("\nThis will create a 100-block disk (400 KB total)")
         print("Minimum 10 blocks required.")
+        print("\nAfter starting, type 'gui' to open the live visualization!")
         sys.exit(1)
     
     disk_path = sys.argv[1]
