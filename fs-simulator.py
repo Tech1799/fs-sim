@@ -11,11 +11,15 @@ import sys
 import struct
 import time
 import threading
-import webbrowser
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
+try:
+    import tkinter as tk
+    from tkinter import ttk
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
+    print("Warning: tkinter not available. GUI visualization will be disabled.")
 
 # Constants
 BLOCK_SIZE = 4096  # 4KB blocks
@@ -850,394 +854,405 @@ class FileSystem:
         return bytes_written == len(entry_data)
 
 
-# Global reference to file system for HTTP server
+# Global reference to file system for GUI
 global_fs = None
 
 
-class VisualizationHandler(BaseHTTPRequestHandler):
-    """HTTP handler for serving visualization."""
+class BlockVisualizationGUI:
+    """Tkinter GUI for real-time block allocation visualization."""
     
-    def log_message(self, format, *args):
-        """Suppress HTTP server logging."""
-        pass
-    
-    def do_GET(self):
-        """Handle GET requests."""
-        if self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            self.wfile.write(self.get_html().encode())
-        elif self.path == '/data':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
-            if global_fs and global_fs.mounted:
-                data = global_fs.get_visualization_data()
-            else:
-                data = {'total_blocks': 0}
-            
-            self.wfile.write(json.dumps(data).encode())
-        else:
-            self.send_error(404)
-    
-    def get_html(self):
-        """Generate HTML for visualization."""
-        return '''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File System Block Allocation - Live View</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        .header h1 {
-            font-size: 2em;
-            margin-bottom: 10px;
-        }
-        .status {
-            display: inline-block;
-            padding: 5px 15px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 20px;
-            margin-top: 10px;
-        }
-        .status.live {
-            background: #43e97b;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
-        .content {
-            padding: 30px;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 15px;
-            margin-bottom: 30px;
-        }
-        .stat-card {
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            transition: transform 0.3s;
-            color: white;
-        }
-        .stat-card:hover {
-            transform: translateY(-5px);
-        }
-        .stat-card.superblock { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
-        .stat-card.inode { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
-        .stat-card.used { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
-        .stat-card.free { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
-        .stat-card.io { background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); }
-        .stat-card .label {
-            font-size: 0.85em;
-            opacity: 0.9;
-            margin-bottom: 8px;
-        }
-        .stat-card .value {
-            font-size: 1.8em;
-            font-weight: bold;
-        }
-        .legend {
-            display: flex;
-            justify-content: center;
-            gap: 25px;
-            margin-bottom: 25px;
-            flex-wrap: wrap;
-        }
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 1em;
-        }
-        .legend-color {
-            width: 25px;
-            height: 25px;
-            border-radius: 4px;
-            border: 2px solid #333;
-        }
-        .legend-color.superblock { background: #f5576c; }
-        .legend-color.inode { background: #00f2fe; }
-        .legend-color.used { background: #38f9d7; }
-        .legend-color.free { background: #e0e0e0; }
-        .blocks-container {
-            background: #f8f9fa;
-            padding: 25px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .blocks-container h3 {
-            margin-bottom: 15px;
-            color: #333;
-        }
-        .blocks-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(22px, 1fr));
-            gap: 3px;
-        }
-        .block {
-            aspect-ratio: 1;
-            border-radius: 3px;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            position: relative;
-        }
-        .block:hover {
-            transform: scale(1.4);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-            z-index: 10;
-        }
-        .block.superblock { background: #f5576c; }
-        .block.inode { background: #00f2fe; }
-        .block.used { background: #38f9d7; }
-        .block.free { background: #e0e0e0; }
-        .tooltip {
-            position: fixed;
-            background: rgba(0,0,0,0.9);
-            color: white;
-            padding: 10px 15px;
-            border-radius: 5px;
-            font-size: 0.9em;
-            pointer-events: none;
-            display: none;
-            z-index: 1000;
-            max-width: 250px;
-        }
-        .update-info {
-            text-align: center;
-            color: #666;
-            margin-top: 15px;
-            font-size: 0.9em;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🗂️ File System Block Allocation</h1>
-            <div class="status live" id="status">● LIVE</div>
-        </div>
-
-        <div class="content">
-            <div class="stats-grid">
-                <div class="stat-card superblock">
-                    <div class="label">Superblock</div>
-                    <div class="value" id="superblockCount">-</div>
-                </div>
-                <div class="stat-card inode">
-                    <div class="label">Inode Blocks</div>
-                    <div class="value" id="inodeCount">-</div>
-                </div>
-                <div class="stat-card used">
-                    <div class="label">Data Used</div>
-                    <div class="value" id="usedCount">-</div>
-                </div>
-                <div class="stat-card free">
-                    <div class="label">Free Blocks</div>
-                    <div class="value" id="freeCount">-</div>
-                </div>
-                <div class="stat-card io">
-                    <div class="label">Disk I/O</div>
-                    <div class="value" id="ioCount">-</div>
-                </div>
-            </div>
-
-            <div class="legend">
-                <div class="legend-item">
-                    <div class="legend-color superblock"></div>
-                    <span><strong>S</strong> Superblock</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color inode"></div>
-                    <span><strong>I</strong> Inodes</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color used"></div>
-                    <span><strong>D</strong> Data (Used)</span>
-                </div>
-                <div class="legend-item">
-                    <div class="legend-color free"></div>
-                    <span><strong>F</strong> Free</span>
-                </div>
-            </div>
-
-            <div class="blocks-container">
-                <h3>📦 Block Allocation Grid</h3>
-                <div class="blocks-grid" id="blocksGrid"></div>
-            </div>
-
-            <div class="update-info">
-                Auto-updates every second • Hover over blocks for details
-            </div>
-        </div>
-    </div>
-
-    <div class="tooltip" id="tooltip"></div>
-
-    <script>
-        let lastData = null;
-
-        function updateVisualization() {
-            fetch('/data')
-                .then(response => response.json())
-                .then(data => {
-                    if (JSON.stringify(data) !== JSON.stringify(lastData)) {
-                        lastData = data;
-                        renderVisualization(data);
-                    }
-                })
-                .catch(err => console.error('Error fetching data:', err));
-        }
-
-        function renderVisualization(data) {
-            if (!data.total_blocks) {
-                return;
-            }
-
-            const grid = document.getElementById('blocksGrid');
-            grid.innerHTML = '';
-
-            // Update stats
-            document.getElementById('superblockCount').textContent = data.superblock_blocks.length;
-            document.getElementById('inodeCount').textContent = data.inode_blocks.length;
-            document.getElementById('usedCount').textContent = data.data_blocks_used.length;
-            document.getElementById('freeCount').textContent = data.data_blocks_free.length;
-            document.getElementById('ioCount').textContent = 
-                `R:${data.disk_reads} W:${data.disk_writes}`;
-
-            // Create blocks
-            for (let i = 0; i < data.total_blocks; i++) {
-                const block = document.createElement('div');
-                block.className = 'block';
-                
-                if (data.superblock_blocks.includes(i)) {
-                    block.classList.add('superblock');
-                    block.dataset.type = 'Superblock';
-                    block.dataset.info = 'File system metadata';
-                } else if (data.inode_blocks.includes(i)) {
-                    block.classList.add('inode');
-                    block.dataset.type = 'Inode Block';
-                    block.dataset.info = 'File/directory metadata';
-                } else if (data.data_blocks_used.includes(i)) {
-                    block.classList.add('used');
-                    block.dataset.type = 'Data Block (Used)';
-                    block.dataset.info = 'Contains file data';
-                } else {
-                    block.classList.add('free');
-                    block.dataset.type = 'Free Block';
-                    block.dataset.info = 'Available for allocation';
-                }
-
-                block.dataset.blockNum = i;
-                
-                block.addEventListener('mouseenter', showTooltip);
-                block.addEventListener('mouseleave', hideTooltip);
-                block.addEventListener('mousemove', moveTooltip);
-
-                grid.appendChild(block);
-            }
-        }
-
-        function showTooltip(e) {
-            const tooltip = document.getElementById('tooltip');
-            const block = e.target;
-            
-            tooltip.innerHTML = `
-                <strong>Block #${block.dataset.blockNum}</strong><br>
-                Type: ${block.dataset.type}<br>
-                ${block.dataset.info}
-            `;
-            tooltip.style.display = 'block';
-            moveTooltip(e);
-        }
-
-        function hideTooltip() {
-            document.getElementById('tooltip').style.display = 'none';
-        }
-
-        function moveTooltip(e) {
-            const tooltip = document.getElementById('tooltip');
-            tooltip.style.left = (e.pageX + 15) + 'px';
-            tooltip.style.top = (e.pageY + 15) + 'px';
-        }
-
-        // Update every second
-        setInterval(updateVisualization, 1000);
-        updateVisualization();
-    </script>
-</body>
-</html>'''
-
-
-class GUIServer:
-    """Web server for GUI visualization."""
-    
-    def __init__(self, fs: FileSystem, port: int = 8080):
+    def __init__(self, fs: FileSystem):
+        if not TKINTER_AVAILABLE:
+            print("Error: tkinter is not available")
+            return
+        
         self.fs = fs
-        self.port = port
-        self.server = None
+        self.root = tk.Tk()
+        self.root.title("File System Block Allocation - Live View")
+        self.root.geometry("1200x800")
+        self.root.configure(bg='#2c3e50')
+        
+        # Color scheme
+        self.colors = {
+            'superblock': '#e74c3c',  # Red
+            'inode': '#3498db',        # Blue
+            'used': '#2ecc71',         # Green
+            'free': '#ecf0f1',         # Light gray
+            'bg': '#2c3e50',           # Dark blue-gray
+            'card_bg': '#34495e',      # Lighter gray
+            'text': '#ecf0f1'          # Light text
+        }
+        
+        self.block_buttons = []
+        self.last_data = None
+        
+        self.create_widgets()
+        self.update_loop()
+        
+    def create_widgets(self):
+        """Create all GUI widgets."""
+        # Header
+        header_frame = tk.Frame(self.root, bg='#34495e', pady=20)
+        header_frame.pack(fill='x')
+        
+        title_label = tk.Label(
+            header_frame,
+            text="🗂️ File System Block Allocation Visualizer",
+            font=('Helvetica', 24, 'bold'),
+            bg='#34495e',
+            fg='#ecf0f1'
+        )
+        title_label.pack()
+        
+        status_label = tk.Label(
+            header_frame,
+            text="● LIVE",
+            font=('Helvetica', 12),
+            bg='#2ecc71',
+            fg='white',
+            padx=15,
+            pady=5,
+            borderwidth=2,
+            relief='raised'
+        )
+        status_label.pack(pady=10)
+        
+        # Main container with scrollbar
+        main_container = tk.Frame(self.root, bg=self.colors['bg'])
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Canvas with scrollbar for scrolling
+        canvas = tk.Canvas(main_container, bg=self.colors['bg'], highlightthickness=0)
+        scrollbar = tk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = tk.Frame(canvas, bg=self.colors['bg'])
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Statistics cards frame
+        stats_frame = tk.Frame(self.scrollable_frame, bg=self.colors['bg'])
+        stats_frame.pack(fill='x', padx=10, pady=10)
+        
+        # Create stat cards
+        self.stat_cards = {}
+        cards_data = [
+            ('superblock', 'Superblock', self.colors['superblock']),
+            ('inode', 'Inode Blocks', self.colors['inode']),
+            ('used', 'Data Used', self.colors['used']),
+            ('free', 'Free Blocks', self.colors['free']),
+            ('io', 'Disk I/O', '#9b59b6')
+        ]
+        
+        for i, (key, label, color) in enumerate(cards_data):
+            card = self.create_stat_card(stats_frame, label, color)
+            card.grid(row=0, column=i, padx=5, sticky='ew')
+            stats_frame.columnconfigure(i, weight=1)
+            self.stat_cards[key] = card
+        
+        # Legend
+        legend_frame = tk.Frame(self.scrollable_frame, bg=self.colors['bg'], pady=15)
+        legend_frame.pack(fill='x')
+        
+        legend_items = [
+            ('S - Superblock', self.colors['superblock']),
+            ('I - Inode Blocks', self.colors['inode']),
+            ('D - Data (Used)', self.colors['used']),
+            ('F - Free Blocks', self.colors['free'])
+        ]
+        
+        for i, (text, color) in enumerate(legend_items):
+            item_frame = tk.Frame(legend_frame, bg=self.colors['bg'])
+            item_frame.pack(side='left', padx=20)
+            
+            color_box = tk.Label(
+                item_frame,
+                text='  ',
+                bg=color,
+                width=3,
+                relief='solid',
+                borderwidth=2
+            )
+            color_box.pack(side='left', padx=5)
+            
+            text_label = tk.Label(
+                item_frame,
+                text=text,
+                font=('Helvetica', 11),
+                bg=self.colors['bg'],
+                fg=self.colors['text']
+            )
+            text_label.pack(side='left')
+        
+        # Blocks grid container
+        blocks_container = tk.Frame(
+            self.scrollable_frame,
+            bg='#34495e',
+            relief='groove',
+            borderwidth=2
+        )
+        blocks_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        title = tk.Label(
+            blocks_container,
+            text="📦 Block Allocation Grid",
+            font=('Helvetica', 14, 'bold'),
+            bg='#34495e',
+            fg=self.colors['text'],
+            pady=10
+        )
+        title.pack()
+        
+        # Scrollable blocks grid
+        self.blocks_grid_frame = tk.Frame(blocks_container, bg='#34495e')
+        self.blocks_grid_frame.pack(padx=15, pady=15)
+        
+        # Info label
+        info_label = tk.Label(
+            self.scrollable_frame,
+            text="Hover over blocks to see details • Updates automatically every second",
+            font=('Helvetica', 10, 'italic'),
+            bg=self.colors['bg'],
+            fg='#95a5a6',
+            pady=10
+        )
+        info_label.pack()
+    
+    def create_stat_card(self, parent, label_text, color):
+        """Create a statistics card."""
+        card_frame = tk.Frame(
+            parent,
+            bg=color,
+            relief='raised',
+            borderwidth=2
+        )
+        
+        label = tk.Label(
+            card_frame,
+            text=label_text,
+            font=('Helvetica', 10),
+            bg=color,
+            fg='white',
+            pady=5
+        )
+        label.pack()
+        
+        value = tk.Label(
+            card_frame,
+            text="-",
+            font=('Helvetica', 24, 'bold'),
+            bg=color,
+            fg='white',
+            pady=10
+        )
+        value.pack()
+        
+        # Store value label for updates
+        card_frame.value_label = value
+        
+        return card_frame
+    
+    def update_visualization(self):
+        """Update the visualization with current data."""
+        if not self.fs.mounted:
+            return
+        
+        data = self.fs.get_visualization_data()
+        if not data or data.get('total_blocks', 0) == 0:
+            return
+        
+        # Check if data changed
+        if data == self.last_data:
+            return
+        
+        self.last_data = data.copy()
+        
+        # Update statistics
+        self.stat_cards['superblock'].value_label.config(
+            text=str(len(data.get('superblock_blocks', [])))
+        )
+        self.stat_cards['inode'].value_label.config(
+            text=str(len(data.get('inode_blocks', [])))
+        )
+        self.stat_cards['used'].value_label.config(
+            text=str(len(data.get('data_blocks_used', [])))
+        )
+        self.stat_cards['free'].value_label.config(
+            text=str(len(data.get('data_blocks_free', [])))
+        )
+        self.stat_cards['io'].value_label.config(
+            text=f"R:{data.get('disk_reads', 0)} W:{data.get('disk_writes', 0)}"
+        )
+        
+        # Update blocks grid
+        self.update_blocks_grid(data)
+    
+    def update_blocks_grid(self, data):
+        """Update the blocks grid."""
+        # Clear existing blocks
+        for widget in self.blocks_grid_frame.winfo_children():
+            widget.destroy()
+        
+        self.block_buttons = []
+        total_blocks = data['total_blocks']
+        
+        # Calculate grid dimensions (try to make it roughly square)
+        cols = min(40, total_blocks)  # Max 40 columns
+        rows = (total_blocks + cols - 1) // cols
+        
+        superblock_set = set(data.get('superblock_blocks', []))
+        inode_set = set(data.get('inode_blocks', []))
+        used_set = set(data.get('data_blocks_used', []))
+        
+        for i in range(total_blocks):
+            row = i // cols
+            col = i % cols
+            
+            # Determine block type and color
+            if i in superblock_set:
+                bg_color = self.colors['superblock']
+                block_type = 'Superblock'
+                block_info = 'File system metadata'
+                text = 'S'
+            elif i in inode_set:
+                bg_color = self.colors['inode']
+                block_type = 'Inode Block'
+                block_info = 'File/directory metadata'
+                text = 'I'
+            elif i in used_set:
+                bg_color = self.colors['used']
+                block_type = 'Data Block (Used)'
+                block_info = 'Contains file data'
+                text = 'D'
+            else:
+                bg_color = self.colors['free']
+                block_type = 'Free Block'
+                block_info = 'Available for allocation'
+                text = ''
+            
+            # Create block button
+            block_btn = tk.Label(
+                self.blocks_grid_frame,
+                text=text,
+                width=2,
+                height=1,
+                bg=bg_color,
+                fg='white' if bg_color != self.colors['free'] else '#7f8c8d',
+                font=('Courier', 8, 'bold'),
+                relief='raised',
+                borderwidth=1,
+                cursor='hand2'
+            )
+            block_btn.grid(row=row, column=col, padx=1, pady=1)
+            
+            # Bind hover events
+            block_btn.bind('<Enter>', 
+                          lambda e, num=i, typ=block_type, info=block_info: 
+                          self.on_block_hover(e, num, typ, info))
+            block_btn.bind('<Leave>', self.on_block_leave)
+            
+            self.block_buttons.append(block_btn)
+    
+    def on_block_hover(self, event, block_num, block_type, block_info):
+        """Handle block hover event."""
+        widget = event.widget
+        
+        # Highlight effect
+        current_bg = widget.cget('bg')
+        widget.original_bg = current_bg
+        
+        # Make it brighter
+        widget.config(relief='solid', borderwidth=2)
+        
+        # Show tooltip
+        tooltip_text = f"Block #{block_num}\nType: {block_type}\n{block_info}"
+        widget.config(cursor='hand2')
+        
+        # Create tooltip window
+        self.tooltip = tk.Toplevel(widget)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+        
+        label = tk.Label(
+            self.tooltip,
+            text=tooltip_text,
+            justify='left',
+            background='#2c3e50',
+            foreground='white',
+            relief='solid',
+            borderwidth=1,
+            font=('Helvetica', 9),
+            padx=10,
+            pady=5
+        )
+        label.pack()
+    
+    def on_block_leave(self, event):
+        """Handle block leave event."""
+        widget = event.widget
+        widget.config(relief='raised', borderwidth=1)
+        
+        # Destroy tooltip
+        if hasattr(self, 'tooltip'):
+            self.tooltip.destroy()
+    
+    def update_loop(self):
+        """Continuous update loop."""
+        self.update_visualization()
+        self.root.after(1000, self.update_loop)  # Update every second
+    
+    def run(self):
+        """Start the GUI main loop."""
+        self.root.mainloop()
+
+
+class GUIManager:
+    """Manager for GUI in separate thread."""
+    
+    def __init__(self, fs: FileSystem):
+        self.fs = fs
+        self.gui = None
         self.thread = None
+        self.is_running = False
         
         global global_fs
         global_fs = fs
     
     def start(self):
-        """Start the GUI server in a separate thread."""
-        self.thread = threading.Thread(target=self._run_server, daemon=True)
+        """Start GUI in separate thread."""
+        if not TKINTER_AVAILABLE:
+            print("Error: tkinter is not available. Cannot start GUI.")
+            return
+        
+        self.is_running = True
+        self.thread = threading.Thread(target=self._run_gui, daemon=False)
         self.thread.start()
         
-        # Give server time to start
-        time.sleep(0.5)
-        
-        # Open browser
-        url = f"http://localhost:{self.port}"
-        print(f"\n🌐 GUI Visualization started at: {url}")
-        print("   The visualization will update automatically as you use the file system.\n")
-        webbrowser.open(url)
+        print("\n🖥️  GUI Visualization window opened!")
+        print("   The visualization updates automatically every second.\n")
     
-    def _run_server(self):
-        """Run the HTTP server."""
+    def _run_gui(self):
+        """Run GUI in thread."""
         try:
-            self.server = HTTPServer(('localhost', self.port), VisualizationHandler)
-            self.server.serve_forever()
+            self.gui = BlockVisualizationGUI(self.fs)
+            self.gui.run()
         except Exception as e:
-            print(f"GUI server error: {e}")
+            print(f"GUI Error: {e}")
+        finally:
+            # Mark as not running when window closes
+            self.is_running = False
+            self.gui = None
     
-    def stop(self):
-        """Stop the GUI server."""
-        if self.server:
-            self.server.shutdown()
+    def is_alive(self):
+        """Check if GUI is still running."""
+        return self.is_running and self.thread and self.thread.is_alive()
 
 
 class Shell:
@@ -1357,12 +1372,19 @@ class Shell:
     
     def cmd_gui(self, args):
         """Open GUI visualization."""
-        if not self.gui_server:
-            self.gui_server = GUIServer(self.fs)
-            self.fs.set_gui_callback(lambda: None)  # GUI updates via polling
-            self.gui_server.start()
-        else:
-            print("GUI is already running at http://localhost:8080")
+        if not TKINTER_AVAILABLE:
+            print("Error: tkinter is not available on your system.")
+            print("Please install tkinter: sudo apt-get install python3-tk (Linux)")
+            return
+        
+        # Check if GUI is actually running
+        if self.gui_server and self.gui_server.is_alive():
+            print("GUI is already running!")
+            return
+        
+        # Start new GUI instance
+        self.gui_server = GUIManager(self.fs)
+        self.gui_server.start()
     
     def cmd_format(self, args):
         """Format the file system."""
@@ -1403,7 +1425,12 @@ class Shell:
         filename = args[0]
         inode_num = self.fs.create_file(filename)
         if inode_num >= 0:
-            print(f"Created file '{filename}' with inode {inode_num}")
+            # Get inode to show creation time
+            inode = self.fs._load_inode(self.fs.disk, inode_num)
+            if inode:
+                created_time = datetime.fromtimestamp(inode.created).strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Created file '{filename}' with inode {inode_num}")
+                print(f"  Created at: {created_time}")
         else:
             print("Failed to create file")
     
@@ -1416,7 +1443,12 @@ class Shell:
         dirname = args[0]
         inode_num = self.fs.mkdir(dirname)
         if inode_num >= 0:
-            print(f"Created directory '{dirname}' with inode {inode_num}")
+            # Get inode to show creation time
+            inode = self.fs._load_inode(self.fs.disk, inode_num)
+            if inode:
+                created_time = datetime.fromtimestamp(inode.created).strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Created directory '{dirname}' with inode {inode_num}")
+                print(f"  Created at: {created_time}")
         else:
             print("Failed to create directory")
     
@@ -1427,10 +1459,15 @@ class Shell:
             print("(empty directory)")
             return
         
-        print(f"\n{'Name':<20} {'Inode':<8} {'Type':<6} {'Size':<10}")
-        print("-" * 50)
+        print(f"\n{'Name':<20} {'Inode':<8} {'Type':<6} {'Size':<10} {'Created':<20} {'Modified':<20}")
+        print("-" * 100)
         for name, inode_num, inode_type, size in entries:
-            print(f"{name:<20} {inode_num:<8} {inode_type:<6} {size:<10}")
+            # Get inode to retrieve timestamps
+            inode = self.fs._load_inode(self.fs.disk, inode_num)
+            if inode:
+                created = datetime.fromtimestamp(inode.created).strftime('%Y-%m-%d %H:%M:%S')
+                modified = datetime.fromtimestamp(inode.modified).strftime('%Y-%m-%d %H:%M:%S')
+                print(f"{name:<20} {inode_num:<8} {inode_type:<6} {size:<10} {created:<20} {modified:<20}")
         print()
     
     def cmd_cd(self, args):
@@ -1465,11 +1502,45 @@ class Shell:
         
         try:
             inode_num = int(args[0])
-            size = self.fs.stat(inode_num)
-            if size >= 0:
-                print(f"Inode {inode_num}: {size} bytes")
-            else:
+            
+            # Get inode details
+            inode = self.fs._load_inode(self.fs.disk, inode_num)
+            if not inode or not inode.valid:
                 print("Error: Invalid inode")
+                return
+            
+            # Display detailed information
+            print(f"\n{'='*60}")
+            print(f"File Statistics for Inode {inode_num}")
+            print(f"{'='*60}")
+            print(f"  Type:           {'Directory' if inode.inode_type == Inode.TYPE_DIR else 'File'}")
+            print(f"  Size:           {inode.size} bytes")
+            print(f"  Created:        {datetime.fromtimestamp(inode.created).strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"  Modified:       {datetime.fromtimestamp(inode.modified).strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Show allocated blocks
+            direct_blocks = [b for b in inode.direct if b != 0]
+            if direct_blocks:
+                print(f"  Direct Blocks:  {direct_blocks}")
+            else:
+                print(f"  Direct Blocks:  None")
+            
+            if inode.indirect != 0:
+                print(f"  Indirect Block: {inode.indirect}")
+                
+                # Count indirect pointers
+                indirect_data = self.fs.disk.read(inode.indirect)
+                if indirect_data:
+                    pointers = struct.unpack('<' + 'I' * POINTERS_PER_BLOCK, indirect_data)
+                    indirect_count = sum(1 for p in pointers if p != 0)
+                    print(f"  Indirect Ptrs:  {indirect_count} data blocks")
+            else:
+                print(f"  Indirect Block: None")
+            
+            total_blocks = len(direct_blocks) + (1 if inode.indirect != 0 else 0)
+            print(f"  Total Blocks:   {total_blocks}")
+            print(f"{'='*60}\n")
+            
         except ValueError:
             print("Error: Invalid inode number")
     
@@ -1511,19 +1582,28 @@ class Shell:
         try:
             inode_num = int(args[0])
             
-            # Get current file size to append at end
-            size = self.fs.stat(inode_num)
-            if size < 0:
+            # Get current file info
+            inode_before = self.fs._load_inode(self.fs.disk, inode_num)
+            if not inode_before or not inode_before.valid:
                 print("Error: Invalid inode")
                 return
+            
+            size_before = inode_before.size
             
             text = ' '.join(args[1:])
             data = text.encode('utf-8')
             
             # Append at the end
-            bytes_written = self.fs.write(inode_num, data, offset=size)
+            bytes_written = self.fs.write(inode_num, data, offset=size_before)
             if bytes_written > 0:
-                print(f"Wrote {bytes_written} bytes to inode {inode_num}")
+                # Get updated inode to show modification time
+                inode_after = self.fs._load_inode(self.fs.disk, inode_num)
+                if inode_after:
+                    modified_time = datetime.fromtimestamp(inode_after.modified).strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"Wrote {bytes_written} bytes to inode {inode_num}")
+                    print(f"  Modified at: {modified_time}")
+                    if size_before > 0:
+                        print(f"  Size: {size_before} → {inode_after.size} bytes")
             else:
                 print("Failed to write data")
         except ValueError:
