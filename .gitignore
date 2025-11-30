@@ -1,3 +1,14 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# Environment variables
+.env
+
 *.img
-file-system-simulator.py
+fs-simulator.py
 Project Preliminary Document.pdf
