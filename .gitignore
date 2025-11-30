@@ -10,5 +10,5 @@ venv/
 .env
 
 *.img
-fs-simulator.py
+fs_simulator.py
 Project Preliminary Document.pdf
