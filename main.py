@@ -13,9 +13,7 @@ def main():
         print("\nUsage: python main.py <disk_image> <num_blocks>")
         print("\nExample:")
         print("  python main.py disk.img 100")
-        print("\nThis will create a 100-block disk (400 KB total)")
         print("Minimum 10 blocks required.")
-        print("\nAfter starting, type 'gui' to open the live visualization!")
         sys.exit(1)
     
     disk_path = sys.argv[1]
